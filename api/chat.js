@@ -1,156 +1,145 @@
-const OPENAI_API_URL = 'https://api.openai.com/v1/responses';
-
-const DEFAULT_MODEL = process.env.OPENAI_MODEL || 'gpt-5-mini';
-
-const MAX_MESSAGES = 60;
-const MAX_MESSAGE_LENGTH = 6000;
-const MAX_TOTAL_LENGTH = 24000;
+const MODEL = "gemini-2.5-flash";
 
 const SYSTEM_INSTRUCTIONS = `
 Você é a IA do Chat Livre AI.
-Converse naturalmente com o usuário e seja útil, direto e claro.
-Responda aos assuntos trazidos pelo usuário seguindo as políticas e limites aplicáveis.
-`.trim();
 
-module.exports = async function handler(req, res) {
-  if (req.method !== 'POST') {
+Converse naturalmente com o usuário.
+Seja útil, direto, claro e amigável.
+Responda em português quando o usuário falar português.
+Siga as políticas e limites aplicáveis.
+`;
+
+export default async function handler(req, res) {
+  // Apenas POST
+  if (req.method !== "POST") {
     return res.status(405).json({
-      error: 'Método não permitido.'
+      error: "Método não permitido."
     });
   }
 
-  const apiKey = process.env.OPENAI_API_KEY;
+  const apiKey = process.env.GEMINI_API_KEY;
 
   if (!apiKey) {
     return res.status(500).json({
-      error: 'OPENAI_API_KEY não configurada na Vercel.'
+      error: "GEMINI_API_KEY não configurada no Vercel."
     });
   }
 
   try {
-    let body = req.body;
+    const body = req.body;
 
-    if (typeof body === 'string') {
-      body = JSON.parse(body);
-    }
-
-    if (!body || typeof body !== 'object') {
+    if (!body || !Array.isArray(body.messages)) {
       return res.status(400).json({
-        error: 'Corpo da requisição inválido.'
+        error: "Formato de mensagem inválido."
       });
     }
 
-    const messages = body.messages;
+    // Limite de mensagens
+    const messages = body.messages.slice(-40);
 
-    if (!Array.isArray(messages) || messages.length === 0) {
-      return res.status(400).json({
-        error: 'Nenhuma mensagem enviada.'
-      });
-    }
-
-    if (messages.length > MAX_MESSAGES) {
-      return res.status(400).json({
-        error: `Máximo de ${MAX_MESSAGES} mensagens por requisição.`
-      });
-    }
-
-    let totalLength = 0;
-
-    const sanitizedMessages = [];
+    // Converte o histórico do seu chat para o formato Gemini
+    const contents = [];
 
     for (const message of messages) {
-      if (!message || typeof message !== 'object') {
-        return res.status(400).json({
-          error: 'Mensagem inválida.'
-        });
+      if (!message || typeof message.content !== "string") {
+        continue;
       }
 
-      const role = message.role;
-      const content = message.content;
+      const content = message.content.trim();
 
-      if (role !== 'user' && role !== 'assistant') {
-        return res.status(400).json({
-          error: 'Role de mensagem inválida.'
-        });
+      if (!content) {
+        continue;
       }
 
-      if (typeof content !== 'string' || !content.trim()) {
-        return res.status(400).json({
-          error: 'Conteúdo da mensagem inválido.'
-        });
-      }
+      // Gemini usa "user" e "model"
+      const role =
+        message.role === "assistant"
+          ? "model"
+          : "user";
 
-      if (content.length > MAX_MESSAGE_LENGTH) {
-        return res.status(400).json({
-          error: `Cada mensagem pode ter no máximo ${MAX_MESSAGE_LENGTH} caracteres.`
-        });
-      }
-
-      totalLength += content.length;
-
-      if (totalLength > MAX_TOTAL_LENGTH) {
-        return res.status(400).json({
-          error: `O tamanho total da conversa excede ${MAX_TOTAL_LENGTH} caracteres.`
-        });
-      }
-
-      sanitizedMessages.push({
+      contents.push({
         role,
-        content: content.trim()
+        parts: [
+          {
+            text: content.slice(0, 6000)
+          }
+        ]
       });
     }
 
-    const response = await fetch(OPENAI_API_URL, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${apiKey}`
-      },
-      body: JSON.stringify({
-        model: DEFAULT_MODEL,
-        instructions: SYSTEM_INSTRUCTIONS,
-        input: sanitizedMessages,
-        store: false
-      })
-    });
+    if (contents.length === 0) {
+      return res.status(400).json({
+        error: "Nenhuma mensagem válida foi enviada."
+      });
+    }
+
+    const response = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/${MODEL}:generateContent`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-goog-api-key": apiKey
+        },
+        body: JSON.stringify({
+          systemInstruction: {
+            parts: [
+              {
+                text: SYSTEM_INSTRUCTIONS
+              }
+            ]
+          },
+
+          contents,
+
+          generationConfig: {
+            temperature: 0.7,
+            maxOutputTokens: 2048
+          }
+        })
+      }
+    );
 
     const data = await response.json();
 
-    if (!response.ok) {
-      console.error('Erro da OpenAI:', data);
+    // Chave inválida
+    if (response.status === 400 || response.status === 401) {
+      console.error("Gemini API authentication/request error:", data);
 
-      if (response.status === 401) {
-        return res.status(500).json({
-          error: 'A chave da OpenAI é inválida ou não está autorizada.'
-        });
-      }
-
-      if (response.status === 429) {
-        return res.status(429).json({
-          error: 'Limite ou créditos da API da OpenAI atingidos.'
-        });
-      }
-
-      if (response.status === 404) {
-        return res.status(500).json({
-          error: `Modelo da OpenAI não encontrado: ${DEFAULT_MODEL}`
-        });
-      }
-
-      return res.status(500).json({
-        error:
-          data?.error?.message ||
-          'Erro ao comunicar com a API da OpenAI.'
+      return res.status(response.status).json({
+        error: "A chave da Gemini API é inválida ou a requisição foi rejeitada."
       });
     }
 
-    const reply = extractReplyText(data);
+    // Limite do Free Tier
+    if (response.status === 429) {
+      console.error("Gemini API rate limit:", data);
 
-    if (!reply) {
-      console.error('Resposta inesperada da OpenAI:', data);
+      return res.status(429).json({
+        error: "O limite gratuito da Gemini API foi atingido. Tente novamente mais tarde."
+      });
+    }
+
+    // Outros erros
+    if (!response.ok) {
+      console.error("Gemini API error:", data);
 
       return res.status(500).json({
-        error: 'A OpenAI não retornou texto.'
+        error: "Erro ao conversar com a Gemini API."
+      });
+    }
+
+    const reply =
+      data?.candidates?.[0]?.content?.parts
+        ?.map(part => part.text || "")
+        .join("")
+        .trim();
+
+    if (!reply) {
+      console.error("Resposta inesperada da Gemini:", data);
+
+      return res.status(500).json({
+        error: "A Gemini não retornou uma resposta válida."
       });
     }
 
@@ -159,36 +148,10 @@ module.exports = async function handler(req, res) {
     });
 
   } catch (error) {
-    console.error('Erro interno:', error);
+    console.error("Server error:", error);
 
     return res.status(500).json({
-      error: 'Erro interno no servidor.'
+      error: "Erro interno ao conectar com a Gemini."
     });
   }
-};
-
-function extractReplyText(data) {
-  if (typeof data?.output_text === 'string') {
-    return data.output_text.trim();
-  }
-
-  if (!Array.isArray(data?.output)) {
-    return '';
-  }
-
-  const parts = [];
-
-  for (const item of data.output) {
-    if (!Array.isArray(item?.content)) {
-      continue;
-    }
-
-    for (const content of item.content) {
-      if (typeof content?.text === 'string') {
-        parts.push(content.text);
-      }
-    }
-  }
-
-  return parts.join('\n').trim();
 }
