@@ -122,7 +122,15 @@ export default async function handler(req, res) {
 
     // Outros erros
     if (!response.ok) {
-      console.error("Gemini API error:", data);
+  console.error("GEMINI STATUS:", response.status);
+  console.error("GEMINI RESPONSE:", JSON.stringify(data));
+
+  return res.status(response.status).json({
+    error: `Gemini respondeu com erro ${response.status}: ${
+      data?.error?.message || "erro desconhecido"
+    }`
+  });
+    }
 
       return res.status(500).json({
         error: "Erro ao conversar com a Gemini API."
