@@ -1,4 +1,4 @@
-const MODEL = "gemini-2.5-flash";
+const MODEL = "gemini-3.6-flash";
 
 const SYSTEM_INSTRUCTIONS = `
 Você é a IA do Chat Livre AI.
